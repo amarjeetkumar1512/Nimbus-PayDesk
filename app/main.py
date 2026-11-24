@@ -6,6 +6,7 @@ from datetime import datetime, timezone
 
 from dotenv import load_dotenv
 from fastapi import FastAPI, Header, HTTPException, Depends
+from fastapi.middleware.cors import CORSMiddleware
 
 from app.db import get_connection, init_db
 from app.schemas import InvoiceIn, StampIn
@@ -22,6 +23,17 @@ app = FastAPI(
     title="Nimbus PayDesk",
     description="Invoice Automation with Human-in-the-Loop Controls",
     version="1.0.0"
+)
+
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=[
+        "http://localhost:5173",
+        "http://127.0.0.1:5173"
+    ],
+    allow_credentials=False,
+    allow_methods=["*"],
+    allow_headers=["*"]
 )
 
 
@@ -70,6 +82,26 @@ def build_ticket_report(ticket):
     )
 
 
+def build_ticket_response(conn, ticket):
+    ticket_data = dict(ticket)
+
+    events = conn.execute(
+        """
+        SELECT stage, event, detail, ts
+        FROM events
+        WHERE cid = ?
+        ORDER BY id ASC
+        """,
+        (ticket_data["cid"],)
+    ).fetchall()
+
+    return {
+        "ticket": ticket_data,
+        "events": [dict(event) for event in events],
+        "report": build_ticket_report(ticket_data)
+    }
+
+
 @app.get("/")
 def home():
     return {
@@ -116,6 +148,36 @@ def ingest_invoice(invoice: InvoiceIn):
 
 
 @app.get(
+    "/tickets",
+    dependencies=[Depends(verify_api_key)]
+)
+def get_all_tickets():
+    conn = get_connection()
+
+    try:
+        tickets = conn.execute(
+            """
+            SELECT *
+            FROM tickets
+            ORDER BY created_at DESC
+            """
+        ).fetchall()
+
+        ticket_data = [
+            build_ticket_response(conn, ticket)
+            for ticket in tickets
+        ]
+
+        return {
+            "total": len(ticket_data),
+            "tickets": ticket_data
+        }
+
+    finally:
+        conn.close()
+
+
+@app.get(
     "/tickets/{ticket_id}",
     dependencies=[Depends(verify_api_key)]
 )
@@ -138,24 +200,7 @@ def get_ticket(ticket_id: str):
                 detail="Ticket not found."
             )
 
-        events = conn.execute(
-            """
-            SELECT stage, event, detail, ts
-            FROM events
-            WHERE cid = ?
-            ORDER BY id ASC
-            """,
-            (ticket["cid"],)
-        ).fetchall()
-
-        ticket_data = dict(ticket)
-        event_data = [dict(event) for event in events]
-
-        return {
-            "ticket": ticket_data,
-            "events": event_data,
-            "report": build_ticket_report(ticket_data)
-        }
+        return build_ticket_response(conn, ticket)
 
     finally:
         conn.close()
