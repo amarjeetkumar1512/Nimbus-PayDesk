@@ -1,7 +1,9 @@
-
+import os
+import re
 import sqlite3
 import uuid
 from pathlib import Path
+
 
 BASE_DIR = Path(__file__).resolve().parent.parent
 DATA_DIR = BASE_DIR / "data"
@@ -10,16 +12,86 @@ DATA_DIR.mkdir(exist_ok=True)
 DB_PATH = DATA_DIR / "nimbus.db"
 
 
+def get_database_url():
+    return os.getenv("DATABASE_URL", "").strip()
+
+
+class PostgresConnection:
+    def __init__(self, connection):
+        self._connection = connection
+
+    def execute(self, query, params=None):
+        query = query.strip()
+
+        if query.upper() == "BEGIN IMMEDIATE":
+            query = "BEGIN"
+        else:
+            query = re.sub(r"\?", "%s", query)
+
+        if params is None:
+            return self._connection.execute(query)
+
+        return self._connection.execute(query, params)
+
+    def commit(self):
+        from psycopg.pq import TransactionStatus
+
+        if self._connection.info.transaction_status != TransactionStatus.IDLE:
+            self._connection.execute("COMMIT")
+
+    def rollback(self):
+        from psycopg.pq import TransactionStatus
+
+        if self._connection.info.transaction_status != TransactionStatus.IDLE:
+            self._connection.execute("ROLLBACK")
+
+    def close(self):
+        self._connection.close()
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, exc_type, exc_value, traceback):
+        try:
+            if exc_type is None:
+                self.commit()
+            else:
+                self.rollback()
+        finally:
+            self.close()
+
+        return False
+
+
 def get_connection():
-    """Create and return a SQLite database connection."""
+    database_url = get_database_url()
+
+    if database_url:
+        import psycopg
+        from psycopg.rows import dict_row
+
+        if database_url.startswith("postgres://"):
+            database_url = database_url.replace(
+                "postgres://",
+                "postgresql://",
+                1
+            )
+
+        connection = psycopg.connect(
+            database_url,
+            row_factory=dict_row,
+            autocommit=True,
+            connect_timeout=15
+        )
+
+        return PostgresConnection(connection)
+
     connection = sqlite3.connect(DB_PATH)
     connection.row_factory = sqlite3.Row
     return connection
 
 
 def migrate_tickets_table(conn):
-    """Migrate tickets table and preserve existing records."""
-
     columns = conn.execute(
         "PRAGMA table_info(tickets)"
     ).fetchall()
@@ -110,8 +182,6 @@ def migrate_tickets_table(conn):
 
 
 def migrate_events_table(conn):
-    """Allow NULL invoice_id in events and preserve existing records."""
-
     columns = conn.execute(
         "PRAGMA table_info(events)"
     ).fetchall()
@@ -141,12 +211,10 @@ def migrate_events_table(conn):
         )
     """)
 
-    old_events = conn.execute(
-        """
+    old_events = conn.execute("""
         SELECT id, cid, invoice_id, stage, event, detail, ts
         FROM events
-        """
-    ).fetchall()
+    """).fetchall()
 
     for event in old_events:
         conn.execute("""
@@ -176,9 +244,7 @@ def migrate_events_table(conn):
     print("Events table migration completed.")
 
 
-def init_db():
-    """Initialize database tables and run required migrations."""
-
+def init_sqlite_db():
     with get_connection() as conn:
         conn.execute("""
             CREATE TABLE IF NOT EXISTS vendors (
@@ -231,7 +297,69 @@ def init_db():
         conn.commit()
 
 
+def init_postgres_db():
+    with get_connection() as conn:
+        conn.execute("""
+            CREATE TABLE IF NOT EXISTS vendors (
+                gstin TEXT PRIMARY KEY,
+                name TEXT NOT NULL,
+                active INTEGER NOT NULL DEFAULT 1
+            )
+        """)
+
+        conn.execute("""
+            CREATE TABLE IF NOT EXISTS purchase_orders (
+                po_id TEXT PRIMARY KEY,
+                vendor TEXT NOT NULL,
+                amount DOUBLE PRECISION NOT NULL
+            )
+        """)
+
+        conn.execute("""
+            CREATE TABLE IF NOT EXISTS tickets (
+                ticket_id TEXT PRIMARY KEY,
+                invoice_id TEXT,
+                cid TEXT UNIQUE NOT NULL,
+                status TEXT NOT NULL,
+                reason TEXT,
+                amount DOUBLE PRECISION,
+                created_at TEXT NOT NULL
+            )
+        """)
+
+        conn.execute("""
+            CREATE TABLE IF NOT EXISTS events (
+                id BIGSERIAL PRIMARY KEY,
+                cid TEXT NOT NULL,
+                invoice_id TEXT,
+                stage TEXT NOT NULL,
+                event TEXT NOT NULL,
+                detail TEXT,
+                ts TEXT NOT NULL
+            )
+        """)
+
+        conn.execute("""
+            CREATE INDEX IF NOT EXISTS idx_tickets_invoice_id
+            ON tickets(invoice_id)
+        """)
+
+
+def init_db():
+    if get_database_url():
+        print("Initializing Nimbus PayDesk PostgreSQL database...")
+        init_postgres_db()
+        print("PostgreSQL database initialized successfully.")
+    else:
+        print("Initializing Nimbus PayDesk SQLite database...")
+        init_sqlite_db()
+        print("SQLite database initialized successfully.")
+
+
 if __name__ == "__main__":
     init_db()
-    print("Nimbus PayDesk database initialized successfully.")
-    print(f"Database location: {DB_PATH}")
+
+    if get_database_url():
+        print("Database: PostgreSQL")
+    else:
+        print(f"Database location: {DB_PATH}")
