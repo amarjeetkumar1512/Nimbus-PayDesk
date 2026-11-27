@@ -1,4 +1,3 @@
-
 import { useEffect, useMemo, useState } from 'react'
 import './App.css'
 
@@ -1334,40 +1333,61 @@ function TicketTable({ tickets, onSelect, compact = false }) {
 }
 
 function AuditSection({ records }) {
+  const [visibleLimit, setVisibleLimit] = useState(PAGE_SIZE)
+  const visibleRecords = records.slice(0, visibleLimit)
+  const canLoadMore = visibleRecords.length < records.length
+
+  function loadMoreRecords() {
+    setVisibleLimit((current) => current + PAGE_SIZE)
+  }
+
   return (
     <section className="content-card">
       <div className="section-heading">
         <div>
           <h2>Audit events</h2>
-          <p>Events found inside ticket records loaded during this browser session.</p>
+          <p>
+            Showing {visibleRecords.length} of {records.length} audit events from
+            ticket records loaded during this browser session.
+          </p>
         </div>
       </div>
 
       {records.length ? (
-        <div className="table-wrap">
-          <table>
-            <thead>
-              <tr>
-                <th>Ticket ID</th>
-                <th>Event</th>
-                <th>Actor</th>
-                <th>Timestamp</th>
-                <th>Details</th>
-              </tr>
-            </thead>
-            <tbody>
-              {records.map((record, index) => (
-                <tr key={record.event_key || index}>
-                  <td>{record.ticket_id || '—'}</td>
-                  <td>{record.event_type || record.event || record.action || '—'}</td>
-                  <td>{record.actor || record.user || '—'}</td>
-                  <td>{formatDate(record.timestamp || record.created_at || record.event_time || record.ts)}</td>
-                  <td>{record.description || record.details || record.reason || record.detail || '—'}</td>
+        <>
+          <div className="table-wrap">
+            <table>
+              <thead>
+                <tr>
+                  <th>Ticket ID</th>
+                  <th>Event</th>
+                  <th>Actor</th>
+                  <th>Timestamp</th>
+                  <th>Details</th>
                 </tr>
-              ))}
-            </tbody>
-          </table>
-        </div>
+              </thead>
+              <tbody>
+                {visibleRecords.map((record, index) => (
+                  <tr key={record.event_key || index}>
+                    <td>{record.ticket_id || '—'}</td>
+                    <td>{record.event_type || record.event || record.action || '—'}</td>
+                    <td>{record.actor || record.user || '—'}</td>
+                    <td>{formatDate(record.timestamp || record.created_at || record.event_time || record.ts)}</td>
+                    <td>{record.description || record.details || record.reason || record.detail || '—'}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+
+          {canLoadMore && (
+            <div className="load-more-wrap">
+              <button className="secondary-button" onClick={loadMoreRecords}>
+                10 more
+              </button>
+            </div>
+          )}
+        </>
       ) : (
         <div className="table-empty">
           <div className="empty-icon">◷</div>
